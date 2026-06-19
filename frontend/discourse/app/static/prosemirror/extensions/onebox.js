@@ -27,7 +27,9 @@ export function oneboxTypeAtPos(doc, pos) {
   const next = index < parent.childCount - 1 ? parent.child(index + 1) : null;
   const isAlone =
     (!prev || prev.type.name === "hard_break") &&
-    (!next || next.type.name === "hard_break");
+    (!next ||
+      next.type.name === "hard_break" ||
+      hasTrailingWhitespaceOnly(doc, pos));
   return $pos.depth === 1 && isAlone ? "full" : "inline";
 }
 
@@ -134,7 +136,18 @@ const extension = {
             return;
           }
 
-          const oneboxType = oneboxTypeAtPos(doc, pos);
+          let oneboxType = oneboxTypeAtPos(doc, pos);
+
+          // Hold a trailing-whitespace link inline while the cursor is on its
+          // line, so the user can keep typing; appendTransaction promotes it.
+          if (
+            !isForced &&
+            oneboxType === "full" &&
+            hasTrailingWhitespaceOnly(doc, pos) &&
+            selectionInSameBlock(doc, pos, tr.selection)
+          ) {
+            oneboxType = "inline";
+          }
 
           if (
             !isForced &&
@@ -388,12 +401,20 @@ const extension = {
                     html: decoration.spec.oneboxHtml,
                   });
 
+                  // Replace the whole paragraph (a block node can't sit beside
+                  // inline content) when the link is its only content, ignoring
+                  // a trailing space the markdown parser would trim anyway.
                   const $pos = view.state.doc.resolve(decoration.from);
                   const paragraph = $pos.parent;
-                  if (
+                  const linkOwnsParagraph =
                     paragraph.type.name === "paragraph" &&
-                    paragraph.childCount === 1
-                  ) {
+                    (paragraph.childCount === 1 ||
+                      (paragraph.childCount === 2 &&
+                        trailingWhitespaceSibling(
+                          view.state.doc,
+                          decoration.from
+                        )));
+                  if (linkOwnsParagraph) {
                     tr.replaceWith($pos.before(), $pos.after(), oneboxNode);
                   } else {
                     tr.replaceWith(decoration.from, decoration.to, oneboxNode);
@@ -413,6 +434,70 @@ const extension = {
           },
         };
       },
+
+      // Promote an inline onebox to a full preview once it ends up alone on its
+      // line (e.g. after Enter, or surrounding text is removed), matching how it
+      // cooks. Resets it to a link so scanForOneboxLinks reuses the fetch path.
+      appendTransaction(transactions, prevState, state) {
+        const docChanged = transactions.some((tr) => tr.docChanged);
+        const selectionChanged = !prevState.selection.eq(state.selection);
+
+        if (!docChanged && !selectionChanged) {
+          return;
+        }
+
+        // Re-check the block the cursor just left, mapped to the near side of
+        // any split so it lands in the paragraph left behind (e.g. by Enter).
+        let leftPos = prevState.selection.from;
+        for (const tr of transactions) {
+          leftPos = tr.mapping.map(leftPos, -1);
+        }
+
+        const tr = state.tr;
+        const inspected = new Set();
+
+        for (const position of [state.selection.from, leftPos]) {
+          const { from, to } = topBlockRange(state.doc, position);
+          if (inspected.has(from)) {
+            continue;
+          }
+          inspected.add(from);
+
+          state.doc.nodesBetween(from, to, (node, nodePos) => {
+            if (node.type.name !== "onebox_inline") {
+              return;
+            }
+
+            if (oneboxTypeAtPos(state.doc, nodePos) !== "full") {
+              return;
+            }
+
+            if (selectionInSameBlock(state.doc, nodePos, state.selection)) {
+              return;
+            }
+
+            const { url } = node.attrs;
+            const mark = state.schema.marks.link.create({
+              href: url,
+              markup: "linkify",
+            });
+
+            // Drop trailing whitespace so the link is the paragraph's only
+            // child — the block onebox can only replace the whole paragraph.
+            const trailing = trailingWhitespaceSibling(state.doc, nodePos);
+            const nodeEnd =
+              nodePos + node.nodeSize + (trailing ? trailing.nodeSize : 0);
+
+            tr.replaceWith(
+              tr.mapping.map(nodePos),
+              tr.mapping.map(nodeEnd),
+              state.schema.text(url, [mark])
+            );
+          });
+        }
+
+        return tr.steps.length ? tr.setMeta("addToHistory", false) : null;
+      },
     });
 
     function showPreviewFailedToast() {
@@ -427,6 +512,51 @@ const extension = {
     return plugin;
   },
 };
+
+function trailingWhitespaceSibling(doc, pos) {
+  const $pos = doc.resolve(pos);
+  const parent = $pos.parent;
+  const index = $pos.index();
+  const followedBySingleSibling = index === parent.childCount - 2;
+
+  if (!followedBySingleSibling) {
+    return null;
+  }
+
+  const next = parent.child(index + 1);
+  const isWhitespace =
+    next.isText && [...next.text].every((char) => isWhiteSpace(char));
+
+  return isWhitespace ? next : null;
+}
+
+function hasTrailingWhitespaceOnly(doc, pos) {
+  return !!trailingWhitespaceSibling(doc, pos);
+}
+
+function topBlockRange(doc, pos) {
+  const clamped = Math.max(0, Math.min(pos, doc.content.size));
+  const $pos = doc.resolve(clamped);
+
+  if ($pos.depth === 0) {
+    const after = $pos.nodeAfter;
+    if (after) {
+      return { from: clamped, to: clamped + after.nodeSize };
+    }
+    const before = $pos.nodeBefore;
+    if (before) {
+      return { from: clamped - before.nodeSize, to: clamped };
+    }
+    return { from: clamped, to: clamped };
+  }
+
+  return { from: $pos.before(1), to: $pos.after(1) };
+}
+
+function selectionInSameBlock(doc, pos, selection) {
+  const { from, to } = topBlockRange(doc, pos);
+  return selection.from >= from && selection.to <= to;
+}
 
 function isOutsideSelection(from, to, tr) {
   const { selection, doc } = tr;
