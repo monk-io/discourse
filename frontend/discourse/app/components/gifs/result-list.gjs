@@ -29,7 +29,7 @@ export default class GifsResultList extends Component {
 
     this.masonry = new MiniMasonry({
       container: ".gifs-result-list",
-      baseWidth: this.site.mobileView ? 145 : 200,
+      baseWidth: this.args.baseWidth ?? (this.site.mobileView ? 145 : 200),
       surroundingGutter: false,
     });
 
@@ -55,7 +55,7 @@ export default class GifsResultList extends Component {
     {{#if @loadMore}}
       <DLoadMore
         @action={{@loadMore}}
-        @root=".gifs-modal__content"
+        @root={{if @root @root ".gifs-modal__content"}}
         @isLoading={{@loading}}
         @enabled={{this.loadMoreEnabled}}
       />

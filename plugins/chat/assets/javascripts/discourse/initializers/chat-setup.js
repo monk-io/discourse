@@ -1,7 +1,7 @@
 import { setOwner } from "@ember/owner";
 import { service } from "@ember/service";
+import ComposerPickerDetached from "discourse/components/composer-picker/detached";
 import EmojiPickerDetached from "discourse/components/emoji-picker/detached";
-import GifsModal from "discourse/components/modal/gifs";
 import { bind } from "discourse/lib/decorators";
 import EmbedMode from "discourse/lib/embed-mode";
 import { number } from "discourse/lib/formatter";
@@ -9,7 +9,7 @@ import { replaceIcon } from "discourse/lib/icon-library";
 import { withPluginApi } from "discourse/lib/plugin-api";
 import { i18n } from "discourse-i18n";
 import { clearChatComposerButtons } from "discourse/plugins/chat/discourse/lib/chat-composer-buttons";
-import { buildGifPickHandler } from "discourse/plugins/chat/discourse/lib/gif-pick-handler";
+import { buildChatPickerSelectHandler } from "discourse/plugins/chat/discourse/lib/gif-pick-handler";
 import ChannelHashtagType from "discourse/plugins/chat/discourse/lib/hashtag-types/channel";
 import richEditorExtension from "../../lib/rich-editor-extension";
 import ChatHeaderIcon from "../components/chat/header/icon";
@@ -119,16 +119,30 @@ class ChatSetupInit {
           label: "gifs.composer_title",
           icon: "gif",
           position: "dropdown",
+          // On desktop the picker has an inline trigger; the dropdown entry is
+          // only needed on mobile, where it opens the same tabbed picker (on
+          // the GIFs tab) as a full-screen modal.
+          displayed() {
+            return this.site.mobileView;
+          },
           action(context) {
-            const modal = owner.lookup("service:modal");
+            const menu = owner.lookup("service:menu");
             const currentUser = owner.lookup("service:current-user");
+            const target = document.querySelector(
+              `[data-chat-composer-context="${context}"]`
+            );
 
-            modal.show(GifsModal, {
-              model: {
-                customPickHandler: buildGifPickHandler({
+            menu.show(target, {
+              identifier: "composer-picker",
+              groupIdentifier: "composer-picker",
+              component: ComposerPickerDetached,
+              modalForMobile: true,
+              data: {
+                context: "chat",
+                initialTab: "gifs",
+                onSelect: buildChatPickerSelectHandler({
                   api,
-                  draft: this.draft,
-                  isThread: context === "thread",
+                  composer: this,
                   currentUser,
                 }),
               },

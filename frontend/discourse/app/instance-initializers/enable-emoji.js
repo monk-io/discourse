@@ -1,6 +1,4 @@
 import { registerEmoji } from "pretty-text/emoji";
-import EmojiPickerDetached from "discourse/components/emoji-picker/detached";
-import { withPluginApi } from "discourse/lib/plugin-api";
 import PreloadStore from "discourse/lib/preload-store";
 
 export default {
@@ -11,31 +9,8 @@ export default {
       return;
     }
 
-    withPluginApi((api) => {
-      api.onToolbarCreate((toolbar) => {
-        toolbar.addButton({
-          id: "emoji",
-          group: "extras",
-          icon: "far-face-smile",
-          sendAction: () => {
-            const menu = api.container.lookup("service:menu");
-            menu.show(document.querySelector(".insert-composer-emoji"), {
-              identifier: "emoji-picker",
-              groupIdentifier: "emoji-picker",
-              component: EmojiPickerDetached,
-              modalForMobile: true,
-              data: {
-                didSelectEmoji: (emoji) => {
-                  toolbar.context.textManipulation.emojiSelected(emoji);
-                },
-              },
-            });
-          },
-          title: "composer.emoji",
-          className: "emoji insert-composer-emoji",
-        });
-      });
-    });
+    // The composer toolbar button is registered by the composer-picker
+    // initializer, which hosts the emoji picker as one tab alongside GIFs.
 
     (PreloadStore.get("customEmoji") || []).forEach((emoji) =>
       registerEmoji(emoji.name, emoji.url, emoji.group)

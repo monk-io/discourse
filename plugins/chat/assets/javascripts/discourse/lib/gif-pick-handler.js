@@ -1,5 +1,6 @@
-// Builds the customPickHandler passed to GifsModal from the chat composer's
-// GIF button. Extracted so the send + draft-reset interplay can be unit tested.
+// Builds the handler that sends a picked GIF from the chat composer (the
+// composer picker's GIF tab). Extracted so the send + draft-reset interplay
+// can be unit tested.
 //
 // The returned handler:
 //   - Sends the picked GIF as a chat message in the active context (channel or
@@ -21,5 +22,24 @@ export function buildGifPickHandler({ api, draft, isThread, currentUser }) {
       return;
     }
     draftHolder?.resetDraft?.(currentUser);
+  };
+}
+
+// Routes a composer picker selection in chat (shared by the desktop inline
+// picker and the mobile dropdown picker): emoji is inserted into the draft,
+// any other tab's value (GIF today) is sent immediately as its own message.
+export function buildChatPickerSelectHandler({ api, composer, currentUser }) {
+  return (value, tab) => {
+    if (tab.id === "emoji") {
+      composer.onSelectEmoji(value);
+      return;
+    }
+
+    buildGifPickHandler({
+      api,
+      draft: composer.draft,
+      isThread: composer.context === "thread",
+      currentUser,
+    })(value);
   };
 }

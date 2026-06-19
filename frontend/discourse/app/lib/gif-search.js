@@ -1,27 +1,23 @@
-import Component from "@glimmer/component";
 import { tracked } from "@glimmer/tracking";
-import { Input } from "@ember/component";
-import { on } from "@ember/modifier";
 import { action } from "@ember/object";
-import { service } from "@ember/service";
-import GifsResultList from "discourse/components/gifs/result-list";
+import { cancel } from "@ember/runloop";
 import { addUniqueValuesToArray } from "discourse/lib/array-tools";
 import discourseDebounce from "discourse/lib/debounce";
 import { autoTrackedArray } from "discourse/lib/tracked-tools";
-import DModal from "discourse/ui-kit/d-modal";
-import dLoadingSpinner from "discourse/ui-kit/helpers/d-loading-spinner";
 import { i18n } from "discourse-i18n";
 
 const KLIPY_SEARCH_URL = "https://api.klipy.com/v2/search";
 const KLIPY_CATEGORIES_URL = "https://api.klipy.com/v2/categories";
 const PAGE_SIZE = 24;
-const MIN_QUERY_LENGTH = 3;
+const SEARCH_DEBOUNCE = 700;
 
-export default class GifsModal extends Component {
-  @service appEvents;
-  @service dialog;
-  @service siteSettings;
+export const MIN_QUERY_LENGTH = 3;
 
+// Drives a Klipy-backed GIF search: query state, paginated results and featured
+// categories, with the Klipy quirks (file detail, content filter, error
+// mapping, API-key redaction) in one place. Shared by the GIF composer-picker
+// tab and the standalone GIF modal; each owner supplies its own `pick`.
+export default class GifSearch {
   @tracked categories = [];
   @tracked loading = false;
   @tracked loadingCategories = false;
@@ -30,26 +26,44 @@ export default class GifsModal extends Component {
   @tracked hasMore = true;
   @autoTrackedArray currentGifs = [];
 
-  constructor() {
-    super(...arguments);
-    this.fetchCategories();
+  isDestroyed = false;
+
+  constructor({ siteSettings, dialog }) {
+    this.siteSettings = siteSettings;
+    this.dialog = dialog;
+  }
+
+  destroy() {
+    this.isDestroyed = true;
+    cancel(this.debouncedSearch);
   }
 
   get showingCategories() {
     return this.query.length < MIN_QUERY_LENGTH && this.categories.length > 0;
   }
 
+  // Sets the query and searches (debounced). Bound because it is passed
+  // directly as a callback to inputs/load-more controls.
   @action
-  pick(content) {
-    const markup = `\n![${content.title}|${content.width}x${content.height}](${content.original})\n`;
+  refresh(value) {
+    this.query = value;
+    this.debouncedSearch = discourseDebounce(
+      this,
+      this.search,
+      SEARCH_DEBOUNCE
+    );
+  }
 
-    if (this.args.model?.customPickHandler) {
-      this.args.model.customPickHandler(markup);
-    } else {
-      this.appEvents.trigger("composer:insert-text", markup);
-    }
+  @action
+  clearQuery() {
+    this.query = "";
+    this.search();
+  }
 
-    this.args.closeModal();
+  @action
+  selectCategory(category) {
+    this.query = category.searchterm;
+    this.search(true, true);
   }
 
   @action
@@ -58,18 +72,6 @@ export default class GifsModal extends Component {
       return;
     }
     await this.search(false);
-  }
-
-  @action
-  refresh(event) {
-    this.query = event.target.value;
-    discourseDebounce(this, this.search, 700);
-  }
-
-  @action
-  selectCategory(category) {
-    this.query = category.searchterm;
-    this.search(true, true);
   }
 
   async fetchCategories() {
@@ -92,17 +94,13 @@ export default class GifsModal extends Component {
         `${KLIPY_CATEGORIES_URL}?${new URLSearchParams(params)}`
       );
 
-      if (this.isDestroying || this.isDestroyed) {
-        return;
-      }
-
-      if (!response.ok) {
+      if (this.isDestroyed || !response.ok) {
         return;
       }
 
       const data = await response.json();
 
-      if (this.isDestroying || this.isDestroyed) {
+      if (this.isDestroyed) {
         return;
       }
 
@@ -171,7 +169,7 @@ export default class GifsModal extends Component {
 
       const response = await fetch(this.getEndpoint(this.query, this.offset));
 
-      if (this.isDestroying || this.isDestroyed) {
+      if (this.isDestroyed) {
         return;
       }
 
@@ -180,7 +178,7 @@ export default class GifsModal extends Component {
       }
 
       const data = await response.json();
-      if (this.isDestroying || this.isDestroyed) {
+      if (this.isDestroyed) {
         return;
       }
 
@@ -203,6 +201,9 @@ export default class GifsModal extends Component {
       }
       addUniqueValuesToArray(this.currentGifs, images);
     } catch (error) {
+      if (this.isDestroyed) {
+        return;
+      }
       this.dialog.alert({ message: error.message ?? error });
     } finally {
       this.loading = false;
@@ -277,62 +278,4 @@ export default class GifsModal extends Component {
     };
     return `${KLIPY_SEARCH_URL}?${new URLSearchParams(params)}`;
   }
-
-  <template>
-    <DModal
-      @title={{i18n "gifs.modal_title"}}
-      @closeModal={{@closeModal}}
-      id="gifs-modal"
-      class="gifs-modal"
-    >
-      <:body>
-        <div class="gifs-modal__input">
-          <Input
-            {{on "input" this.refresh}}
-            @type="text"
-            @value={{this.query}}
-            name="query"
-            autofocus
-          />
-
-          {{#if this.loading}}
-            {{dLoadingSpinner size="small"}}
-          {{/if}}
-        </div>
-
-        {{#if this.currentGifs.length}}
-          <div class="gifs-modal__content">
-            <div class="gifs-modal__box">
-              <GifsResultList
-                @content={{this.currentGifs}}
-                @pick={{this.pick}}
-                @loading={{this.loading}}
-                @loadMore={{this.loadMore}}
-                @canLoadMore={{this.hasMore}}
-              />
-            </div>
-          </div>
-        {{else if this.showingCategories}}
-          <div class="gifs-modal__content">
-            <h3 class="gifs-modal__categories-header">{{i18n
-                "gifs.browse_categories"
-              }}</h3>
-            <div class="gifs-modal__box">
-              <GifsResultList
-                @content={{this.categories}}
-                @pick={{this.selectCategory}}
-                @loading={{false}}
-              />
-            </div>
-          </div>
-        {{else if this.loadingCategories}}
-          <div class="gifs-modal__loading-categories">
-            {{dLoadingSpinner size="medium"}}
-          </div>
-        {{else}}
-          <div class="gifs-modal__no-results">{{i18n "gifs.no_results"}}</div>
-        {{/if}}
-      </:body>
-    </DModal>
-  </template>
 }
