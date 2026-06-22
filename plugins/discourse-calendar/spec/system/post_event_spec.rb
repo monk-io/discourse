@@ -593,4 +593,44 @@ describe "Post event" do
       expect(ics_content).to include("FREQ=WEEKLY")
     end
   end
+
+  context "with the advanced settings toggle" do
+    it "changes the toggle label and styling between the basic and advanced screens" do
+      raw = "[event start='2222-02-22 14:22']\n[/event]"
+      post = PostCreator.create!(admin, title: "Toggle test event", raw:)
+
+      visit(post.topic.url)
+      post_event_page.edit
+
+      advanced_label = I18n.t("js.discourse_post_event.builder_modal.advanced_settings")
+      basic_label = I18n.t("js.discourse_post_event.builder_modal.basic_settings")
+      toggle = ".post-event-builder-modal .d-modal__footer .advanced-settings"
+
+      expect(page).to have_css(".post-event-builder-modal.is-compact")
+      expect(page).to have_css("#{toggle}:not(.is-active)", text: advanced_label)
+
+      find(toggle).click
+
+      expect(page).to have_css(".post-event-builder-modal.is-advanced")
+      expect(page).to have_css("#{toggle}.is-active", text: basic_label)
+
+      # the custom fields section is targetable for styling/hiding
+      expect(page).to have_css(".post-event-builder-modal .event-custom-fields")
+    end
+  end
+
+  context "when editing an event without an explicit name" do
+    it "shows the topic title as the event name placeholder" do
+      title = "Nameless meetup"
+      raw = "[event start='2222-02-22 14:22']\n[/event]"
+      post = PostCreator.create!(admin, title:, raw:)
+
+      visit(post.topic.url)
+      post_event_page.edit
+
+      expect(page).to have_css(
+        ".post-event-builder-modal .composer-event__name-input[placeholder='#{title}']",
+      )
+    end
+  end
 end
