@@ -8,7 +8,7 @@ module Migrations
       TRANSACTION_BATCH_SIZE = 1000
       PREPARED_STATEMENT_CACHE_SIZE = 5
 
-      def self.open_database(path:)
+      def self.open_database(path:, gvl_release_threshold: nil)
         path = File.expand_path(path, Migrations.root_path)
         FileUtils.mkdir_p(File.dirname(path))
 
@@ -21,15 +21,29 @@ module Migrations
           locking_mode: "normal",
           cache_size: -10_000, # 10_000 pages
         )
+
+        # A dedicated single-writer connection that only ever runs short inserts
+        # passes `gvl_release_threshold: 0`, telling extralite to hold the GVL
+        # for the whole statement. Without it, extralite releases the GVL at
+        # every statement boundary, which on MRI lets a rival in-process thread
+        # (a pipe-reader, the collector) preempt the writer per row and drops
+        # throughput ~8x. Never set this on a connection that runs long queries.
+        db.gvl_release_threshold = gvl_release_threshold unless gvl_release_threshold.nil?
+
         db
       end
 
       attr_reader :db, :path
 
-      def initialize(path:, transaction_batch_size: TRANSACTION_BATCH_SIZE)
+      def initialize(
+        path:,
+        transaction_batch_size: TRANSACTION_BATCH_SIZE,
+        gvl_release_threshold: nil
+      )
         @path = File.expand_path(path, Migrations.root_path)
         @transaction_batch_size = transaction_batch_size
-        @db = self.class.open_database(path:)
+        @gvl_release_threshold = gvl_release_threshold
+        @db = self.class.open_database(path:, gvl_release_threshold:)
         @statement_counter = 0
         @statement_cache = PreparedStatementCache.new(PREPARED_STATEMENT_CACHE_SIZE)
 
@@ -110,7 +124,12 @@ module Migrations
         before_hook = ForkManager.before_fork { close_connection(keep_path: true) }
 
         after_hook =
-          ForkManager.after_fork_parent { @db = self.class.open_database(path: @path) if @path }
+          ForkManager.after_fork_parent do
+            if @path
+              @db =
+                self.class.open_database(path: @path, gvl_release_threshold: @gvl_release_threshold)
+            end
+          end
 
         [before_hook, after_hook]
       end

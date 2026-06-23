@@ -67,7 +67,7 @@ RSpec.describe Migrations::Database::DbWriter do
       end
     end
 
-    it "never executes statements on the caller thread" do
+    it "executes statements on the caller thread in direct mode" do
       create_db_writer do |db_writer|
         connection = db_writer.instance_variable_get(:@connection)
         thread_names = []
@@ -78,7 +78,25 @@ RSpec.describe Migrations::Database::DbWriter do
         end
 
         insert(db_writer, 1)
-        db_writer.flush
+
+        expect(thread_names).to eq([Thread.current.name])
+      end
+    end
+
+    it "executes statements on the writer thread inside a concurrent section" do
+      create_db_writer do |db_writer|
+        connection = db_writer.instance_variable_get(:@connection)
+        thread_names = []
+
+        allow(connection).to receive(:insert).and_wrap_original do |original, *args|
+          thread_names << Thread.current.name
+          original.call(*args)
+        end
+
+        db_writer.concurrent do
+          insert(db_writer, 1)
+          db_writer.flush
+        end
 
         expect(thread_names).to eq(["db_writer"])
       end
@@ -97,14 +115,16 @@ RSpec.describe Migrations::Database::DbWriter do
       create_db_writer do |db_writer, db_path|
         connection = db_writer.instance_variable_get(:@connection)
 
-        1.upto(10) { |id| insert(db_writer, id) }
-        db_writer.flush
+        db_writer.concurrent do
+          1.upto(10) { |id| insert(db_writer, id) }
+          db_writer.flush
 
-        # executed within the writer's open, batched transaction…
-        expect(connection.query_value("SELECT COUNT(*) FROM foo")).to eq(10)
+          # executed within the writer's open, batched transaction…
+          expect(connection.query_value("SELECT COUNT(*) FROM foo")).to eq(10)
 
-        # …but not necessarily committed and visible to other connections yet
-        expect(all_ids(db_path)).to be_empty
+          # …but not necessarily committed and visible to other connections yet
+          expect(all_ids(db_path)).to be_empty
+        end
       end
     end
 
@@ -148,15 +168,37 @@ RSpec.describe Migrations::Database::DbWriter do
   end
 
   describe "error propagation" do
-    it "surfaces a failed statement on the next `insert`, `flush` or `close`" do
+    it "raises a failed statement immediately in direct mode" do
       create_db_writer do |db_writer|
-        db_writer.insert("INSERT INTO missing_table (id) VALUES (?)", [1])
-
-        expect { db_writer.flush }.to raise_error(described_class::WriteError) do |error|
+        expect {
+          db_writer.insert("INSERT INTO missing_table (id) VALUES (?)", [1])
+        }.to raise_error(described_class::WriteError) { |error|
           expect(error.cause).to be_a(Extralite::Error)
-        end
+        }
 
+        # stays failed
         expect { insert(db_writer, 1) }.to raise_error(described_class::WriteError)
+
+        # `close` re-raises, but still cleans up without hanging
+        expect { db_writer.close }.to raise_error(described_class::WriteError)
+        expect(db_writer.closed?).to be true
+        expect(Migrations::ForkManager.hook_count).to eq(0)
+      end
+    end
+
+    it "surfaces a failed statement on the next call inside a concurrent section" do
+      create_db_writer do |db_writer|
+        expect {
+          db_writer.concurrent do
+            db_writer.insert("INSERT INTO missing_table (id) VALUES (?)", [1])
+
+            expect { db_writer.flush }.to raise_error(described_class::WriteError) do |error|
+              expect(error.cause).to be_a(Extralite::Error)
+            end
+
+            expect { insert(db_writer, 1) }.to raise_error(described_class::WriteError)
+          end
+        }.to raise_error(described_class::WriteError) # surfaced again when the section drains
 
         # `close` re-raises, but still cleans up without hanging
         expect { db_writer.close }.to raise_error(described_class::WriteError)
@@ -171,21 +213,23 @@ RSpec.describe Migrations::Database::DbWriter do
       create_db_writer do |db_writer, db_path|
         connection = db_writer.instance_variable_get(:@connection)
 
-        1.upto(5) { |id| insert(db_writer, id) }
+        db_writer.concurrent do
+          1.upto(5) { |id| insert(db_writer, id) }
 
-        Migrations::ForkManager.with_batched_forks do
-          # the writer parked before the connection's own before-fork hook
-          # committed and closed the database, so all previous statements
-          # are visible to other connections
-          expect(connection.closed?).to be true
-          expect(all_ids(db_path)).to eq((1..5).to_a)
+          Migrations::ForkManager.with_batched_forks do
+            # the writer parked before the connection's own before-fork hook
+            # committed and closed the database, so all previous statements
+            # are visible to other connections
+            expect(connection.closed?).to be true
+            expect(all_ids(db_path)).to eq((1..5).to_a)
 
-          # producers may keep enqueueing while paused
-          insert(db_writer, 6)
-          expect(all_ids(db_path)).to eq((1..5).to_a)
+            # producers may keep enqueueing while paused
+            insert(db_writer, 6)
+            expect(all_ids(db_path)).to eq((1..5).to_a)
+          end
+
+          expect(connection.closed?).to be false
         end
-
-        expect(connection.closed?).to be false
 
         db_writer.close
         expect(all_ids(db_path)).to eq((1..6).to_a)
@@ -194,20 +238,22 @@ RSpec.describe Migrations::Database::DbWriter do
 
     it "loses nothing across repeated fork windows with concurrent producers" do
       create_db_writer do |db_writer, db_path|
-        producers =
-          Array.new(3) do |index|
-            Thread.new do
-              offset = index * 10_000
-              1.upto(2_000) { |id| insert(db_writer, offset + id) }
+        db_writer.concurrent do
+          producers =
+            Array.new(3) do |index|
+              Thread.new do
+                offset = index * 10_000
+                1.upto(2_000) { |id| insert(db_writer, offset + id) }
+              end
             end
-          end
 
-        fork_windows = 0
-        while producers.any?(&:alive?) || fork_windows < 50
-          Migrations::ForkManager.with_batched_forks {}
-          fork_windows += 1
+          fork_windows = 0
+          while producers.any?(&:alive?) || fork_windows < 50
+            Migrations::ForkManager.with_batched_forks {}
+            fork_windows += 1
+          end
+          producers.each(&:join)
         end
-        producers.each(&:join)
 
         db_writer.close
 
@@ -225,26 +271,28 @@ RSpec.describe Migrations::Database::DbWriter do
 
     it "loses no statements when producers enqueue concurrently with a fork" do
       create_db_writer do |db_writer, db_path|
-        producer = Thread.new { 1.upto(500) { |id| insert(db_writer, id) } }
+        db_writer.concurrent do
+          producer = Thread.new { 1.upto(500) { |id| insert(db_writer, id) } }
 
-        child_pid = nil
-        Migrations::ForkManager.with_batched_forks do
-          child_pid =
-            Migrations::ForkManager.fork do
-              # in the child all writer methods are pid-guarded no-ops
+          child_pid = nil
+          Migrations::ForkManager.with_batched_forks do
+            child_pid =
+              Migrations::ForkManager.fork do
+                # in the child all writer methods are pid-guarded no-ops
 
-              insert(db_writer, 9_999)
-              db_writer.flush
-              db_writer.close
-              exit!(0)
-            rescue Exception
-              exit!(1)
-            end
+                insert(db_writer, 9_999)
+                db_writer.flush
+                db_writer.close
+                exit!(0)
+              rescue Exception
+                exit!(1)
+              end
+          end
+
+          producer.join
+          Process.wait(child_pid)
+          expect($?.exitstatus).to eq(0)
         end
-
-        producer.join
-        Process.wait(child_pid)
-        expect($?.exitstatus).to eq(0)
 
         db_writer.close
         expect(all_ids(db_path)).to eq((1..500).to_a)
