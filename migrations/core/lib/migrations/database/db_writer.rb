@@ -26,7 +26,7 @@ module Migrations
         @error = nil
         @closed = false
 
-        # Hook registration order is load-bearing: `ForkManager` runs hooks in
+        # Hook registration order matters here: `ForkManager` runs hooks in
         # registration order, so the writer thread parks before the connection's
         # own before-fork hook closes the database, and the connection is
         # reopened before the writer resumes.
@@ -38,8 +38,8 @@ module Migrations
           @thread = start_writer_thread
         rescue StandardError
           @connection&.close
-          ForkManager.remove_before_fork_hook(@pause_hook)
-          ForkManager.remove_after_fork_parent_hook(@resume_hook) if @resume_hook
+          ForkManager.remove_before_fork(@pause_hook)
+          ForkManager.remove_after_fork_parent(@resume_hook) if @resume_hook
           raise
         end
       end
@@ -94,8 +94,8 @@ module Migrations
         @thread.join
         @connection.close
 
-        ForkManager.remove_before_fork_hook(@pause_hook)
-        ForkManager.remove_after_fork_parent_hook(@resume_hook)
+        ForkManager.remove_before_fork(@pause_hook)
+        ForkManager.remove_after_fork_parent(@resume_hook)
 
         @mutex.synchronize { check_error! }
         nil

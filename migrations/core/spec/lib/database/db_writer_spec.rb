@@ -52,7 +52,7 @@ RSpec.describe Migrations::Database::DbWriter do
       )
 
       expect { described_class.new(path: "unused.db") }.to raise_error(Extralite::Error)
-      expect(Migrations::ForkManager.size).to eq(0)
+      expect(Migrations::ForkManager.hook_count).to eq(0)
     end
   end
 
@@ -136,13 +136,13 @@ RSpec.describe Migrations::Database::DbWriter do
     end
 
     it "cleans up all fork hooks" do
-      expect(Migrations::ForkManager.size).to eq(0)
+      expect(Migrations::ForkManager.hook_count).to eq(0)
 
       create_db_writer do |db_writer|
         # pause/resume hooks of the writer plus the connection's own hook pair
-        expect(Migrations::ForkManager.size).to eq(4)
+        expect(Migrations::ForkManager.hook_count).to eq(4)
         db_writer.close
-        expect(Migrations::ForkManager.size).to eq(0)
+        expect(Migrations::ForkManager.hook_count).to eq(0)
       end
     end
   end
@@ -161,7 +161,7 @@ RSpec.describe Migrations::Database::DbWriter do
         # `close` re-raises, but still cleans up without hanging
         expect { db_writer.close }.to raise_error(described_class::WriteError)
         expect(db_writer.closed?).to be true
-        expect(Migrations::ForkManager.size).to eq(0)
+        expect(Migrations::ForkManager.hook_count).to eq(0)
       end
     end
   end
@@ -173,7 +173,7 @@ RSpec.describe Migrations::Database::DbWriter do
 
         1.upto(5) { |id| insert(db_writer, id) }
 
-        Migrations::ForkManager.batch_forks do
+        Migrations::ForkManager.with_batched_forks do
           # the writer parked before the connection's own before-fork hook
           # committed and closed the database, so all previous statements
           # are visible to other connections
@@ -204,7 +204,7 @@ RSpec.describe Migrations::Database::DbWriter do
 
         fork_windows = 0
         while producers.any?(&:alive?) || fork_windows < 50
-          Migrations::ForkManager.batch_forks {}
+          Migrations::ForkManager.with_batched_forks {}
           fork_windows += 1
         end
         producers.each(&:join)
@@ -228,7 +228,7 @@ RSpec.describe Migrations::Database::DbWriter do
         producer = Thread.new { 1.upto(500) { |id| insert(db_writer, id) } }
 
         child_pid = nil
-        Migrations::ForkManager.batch_forks do
+        Migrations::ForkManager.with_batched_forks do
           child_pid =
             Migrations::ForkManager.fork do
               # in the child all writer methods are pid-guarded no-ops
