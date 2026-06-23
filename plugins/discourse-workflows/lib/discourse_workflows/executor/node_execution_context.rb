@@ -294,7 +294,7 @@ module DiscourseWorkflows
         end
 
         if username.present?
-          user = User.find_by(username: username)
+          user = User.find_by_username(username)
           raise DiscourseWorkflows::NodeError, "User '#{username}' not found" if user.nil?
         else
           user = User.find_by(id: id)
