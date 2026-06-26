@@ -1,0 +1,565 @@
+namespace: discourse
+
+stack-db:
+  defines: runnable
+  metadata:
+    name: Discourse Stack PostgreSQL
+    description: |
+      Private pgvector-capable PostgreSQL database for the production-intended standalone Discourse stack.
+    tags: discourse, postgres, pgvector, database, standalone, production
+    website: https://www.postgresql.org/
+    source: https://github.com/pgvector/pgvector
+    publisher: monk.io
+    icon: https://www.postgresql.org/media/img/about/press/elephant.png
+    private: false
+  variables:
+    postgres-image-tag:
+      type: string
+      value: pg17
+      description: Public pgvector/pgvector image tag used by the standalone stack database.
+    db-name:
+      type: string
+      env: POSTGRES_DB
+      value: <- $global-stack-db-name
+      description: PostgreSQL database name created for the standalone stack.
+    db-user:
+      type: string
+      env: POSTGRES_USER
+      value: <- $global-stack-db-user
+      description: PostgreSQL user created for the standalone stack.
+    db-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $global-stack-db-password
+      description: Sensitive generated or secret-backed PostgreSQL password for the standalone stack database. Production inheritors should set secret("discourse-db-password").
+  containers:
+    postgres:
+      image: pgvector/pgvector
+      image-tag: <- $postgres-image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/discourse-stack-postgres-v4:/var/lib/postgresql/data`
+  permitted-secrets:
+    discourse-db-password: true
+  services:
+    postgres:
+      container: postgres
+      port: 5432
+      protocol: tcp
+      publish: false
+      description: Private PostgreSQL endpoint consumed by the standalone Discourse stack.
+  checks:
+    readiness:
+      code: <- `exec("postgres", "pg_isready", "-U", "${db-user}") contains?("accepting connections")`
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+stack-redis:
+  defines: runnable
+  metadata:
+    name: Discourse Stack Redis
+    description: Private password-protected Redis service for the production-intended standalone Discourse stack.
+    tags: discourse, redis, cache, standalone, production
+    website: https://redis.io/
+    source: https://github.com/redis/redis
+    publisher: monk.io
+    icon: https://cdn.icon-icons.com/icons2/2415/PNG/512/redis_original_wordmark_logo_icon_146369.png
+    private: false
+  variables:
+    redis-image-tag:
+      type: string
+      value: latest
+      description: Public bitnamilegacy/redis image tag used by the standalone stack.
+    allow-empty-password:
+      type: string
+      env: ALLOW_EMPTY_PASSWORD
+      value: "no"
+      description: Disables empty Redis passwords for the standalone stack.
+    redis-password:
+      type: string
+      env: REDIS_PASSWORD
+      value: <- $global-stack-redis-password
+      description: Sensitive generated or secret-backed Redis password for the standalone stack. Production inheritors should set secret("discourse-redis-password").
+    redis-disable-commands:
+      type: string
+      env: REDIS_DISABLE_COMMANDS
+      value: FLUSHDB,FLUSHALL,CONFIG
+      description: Redis commands disabled for safer standalone operation.
+  containers:
+    redis:
+      image: bitnamilegacy/redis
+      image-tag: <- $redis-image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/discourse-stack-redis-v4:/bitnami/redis/data`
+  permitted-secrets:
+    discourse-redis-password: true
+  services:
+    redis:
+      container: redis
+      port: 6379
+      protocol: tcp
+      publish: false
+      description: Private Redis endpoint consumed by the standalone Discourse stack.
+  checks:
+    readiness:
+      code: tcp-check-service("discourse/stack-redis", "redis")
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+stack-app:
+  defines: runnable
+  inherits: discourse/base
+  metadata:
+    name: Discourse Standalone Web
+    description: |
+      Production-intended Discourse web process connected to private PostgreSQL and Redis. The HTTP service is ingress-only for non-local deployments.
+    tags: discourse, forum, rails, standalone, production
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: <- $global-stack-host
+      description: Production hostname used by the standalone Discourse stack.
+    discourse-admin-password:
+      type: string
+      env: DISCOURSE_PASSWORD
+      value: <- $global-stack-admin-password
+      description: Sensitive generated or secret-backed initial admin password for the standalone stack. Production inheritors should set secret("discourse-admin-password").
+    discourse-admin-email:
+      type: string
+      env: DISCOURSE_EMAIL
+      value: <- $global-stack-admin-email
+      description: Initial admin email used during standalone stack bootstrap.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: <- $global-stack-db-name
+      description: PostgreSQL database name used by the standalone stack.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: <- $global-stack-db-user
+      description: PostgreSQL username used by the standalone stack.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: <- $global-stack-db-password
+      description: Sensitive generated or secret-backed PostgreSQL password shared with the standalone stack database.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: <- $global-stack-redis-password
+      description: Sensitive generated or secret-backed Redis password shared with the standalone stack Redis service.
+  containers:
+    discourse:
+      paths:
+        - <- `${volume-path}/discourse-stack-app-v4:/bitnami/discourse`
+  permitted-secrets:
+    discourse-db-password: true
+    discourse-redis-password: true
+    discourse-admin-password: true
+  services:
+    http:
+      container: discourse
+      port: <- $discourse-port
+      protocol: tcp
+      publish: false
+      description: Discourse HTTP service intended for production Monk ingress.
+      ingress-routes:
+        discourse:
+          path-prefix: /
+  connections:
+    database:
+      target: discourse/stack-db
+      service: postgres
+      description: Private PostgreSQL service connected to the standalone Discourse web process.
+    redis:
+      target: discourse/stack-redis
+      service: redis
+      description: Private Redis service connected to the standalone Discourse web process.
+  depends:
+    wait-for:
+      runnables:
+        - discourse/stack-db
+        - discourse/stack-redis
+      timeout: 240
+  checks:
+    readiness:
+      code: http-get-service("discourse/stack-app", "http", "/srv/status") get-member("status") 200 equal?
+      period: 20
+      initialDelay: 180
+      attempts: 45
+
+stack-sidekiq:
+  defines: runnable
+  inherits: discourse/sidekiq-base
+  metadata:
+    name: Discourse Standalone Sidekiq
+    description: Production-intended Discourse Sidekiq worker connected to the standalone stack PostgreSQL and Redis services.
+    tags: discourse, forum, sidekiq, standalone, production
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: <- $global-stack-host
+      description: Production hostname shared with the standalone stack web process.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: <- $global-stack-db-name
+      description: PostgreSQL database name used by the standalone stack Sidekiq worker.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: <- $global-stack-db-user
+      description: PostgreSQL username used by the standalone stack Sidekiq worker.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: <- $global-stack-db-password
+      description: Sensitive generated or secret-backed PostgreSQL password shared with the standalone stack Sidekiq worker.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: <- $global-stack-redis-password
+      description: Sensitive generated or secret-backed Redis password shared with the standalone stack Sidekiq worker.
+  containers:
+    sidekiq:
+      paths:
+        - <- `${volume-path}/discourse-stack-app-v4:/bitnami/discourse`
+  permitted-secrets:
+    discourse-db-password: true
+    discourse-redis-password: true
+  connections:
+    database:
+      target: discourse/stack-db
+      service: postgres
+      description: Private PostgreSQL service connected to the standalone stack Sidekiq worker.
+    redis:
+      target: discourse/stack-redis
+      service: redis
+      description: Private Redis service connected to the standalone stack Sidekiq worker.
+  depends:
+    wait-for:
+      runnables:
+        - discourse/stack-app
+      timeout: 600
+
+stack:
+  defines: group
+  metadata:
+    name: Discourse Standalone Stack
+    description: |
+      Secure production-intended standalone Discourse stack with private PostgreSQL and Redis. Only the authenticated Discourse web service is exposed through Monk ingress; local Monk targets do not provide ingress.
+    tags: discourse, forum, postgres, redis, standalone, production
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    global-stack-host:
+      type: string
+      value: discourse.example.com
+      description: Production hostname expected at Monk ingress for the standalone stack.
+    global-stack-admin-email:
+      type: string
+      value: admin@example.com
+      description: Initial admin email shared by standalone stack runnables.
+    global-stack-db-name:
+      type: string
+      value: bitnami_discourse
+      description: PostgreSQL database name shared by standalone stack runnables.
+    global-stack-db-user:
+      type: string
+      value: bn_discourse
+      description: PostgreSQL username shared by standalone stack runnables.
+    global-stack-db-password:
+      type: string
+      value: <- secret("discourse-db-password") "discourse-stack-db-password-20260626" default
+      description: 'Sensitive PostgreSQL password for the standalone stack. The template uses secret("discourse-db-password") when available; inheriting production configurations must set that secret.'
+    global-stack-redis-password:
+      type: string
+      value: <- secret("discourse-redis-password") "discourse-stack-redis-password-20260626" default
+      description: 'Sensitive Redis password for the standalone stack. The template uses secret("discourse-redis-password") when available; inheriting production configurations must set that secret.'
+    global-stack-admin-password:
+      type: string
+      value: <- secret("discourse-admin-password") "discourse-stack-admin-password-20260626" default
+      description: 'Sensitive initial Discourse admin password for the standalone stack. The template uses secret("discourse-admin-password") when available; inheriting production configurations must set that secret.'
+  permitted-secrets:
+    discourse-db-password: true
+    discourse-redis-password: true
+    discourse-admin-password: true
+  members:
+    - discourse/stack-db
+    - discourse/stack-redis
+    - discourse/stack-app
+    - discourse/stack-sidekiq
+
+stack-local-db:
+  defines: runnable
+  inherits: discourse/stack-db
+  metadata:
+    name: Discourse Local Stack PostgreSQL
+    description: Private pgvector-capable PostgreSQL database for the local standalone Discourse verification flavor.
+    tags: discourse, postgres, pgvector, database, standalone, local
+    website: https://www.postgresql.org/
+    source: https://github.com/pgvector/pgvector
+    publisher: monk.io
+    icon: https://www.postgresql.org/media/img/about/press/elephant.png
+    private: false
+  variables:
+    db-name:
+      type: string
+      env: POSTGRES_DB
+      value: <- $global-stack-local-db-name
+      description: PostgreSQL database name created for the local stack flavor.
+    db-user:
+      type: string
+      env: POSTGRES_USER
+      value: <- $global-stack-local-db-user
+      description: PostgreSQL user created for the local stack flavor.
+    db-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $global-stack-local-db-password
+      description: Sensitive generated PostgreSQL password for the local stack flavor.
+  containers:
+    postgres:
+      paths:
+        - <- `${volume-path}/discourse-stack-local-postgres-v2:/var/lib/postgresql/data`
+  checks:
+    readiness:
+      code: <- `exec("postgres", "pg_isready", "-U", "${db-user}") contains?("accepting connections")`
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+stack-local-redis:
+  defines: runnable
+  inherits: discourse/stack-redis
+  metadata:
+    name: Discourse Local Stack Redis
+    description: Private password-protected Redis service for the local standalone Discourse verification flavor.
+    tags: discourse, redis, cache, standalone, local
+    website: https://redis.io/
+    source: https://github.com/redis/redis
+    publisher: monk.io
+    icon: https://cdn.icon-icons.com/icons2/2415/PNG/512/redis_original_wordmark_logo_icon_146369.png
+    private: false
+  variables:
+    redis-password:
+      type: string
+      env: REDIS_PASSWORD
+      value: <- $global-stack-local-redis-password
+      description: Sensitive generated Redis password for the local stack flavor.
+  containers:
+    redis:
+      paths:
+        - <- `${volume-path}/discourse-stack-local-redis-v2:/bitnami/redis/data`
+  checks:
+    readiness:
+      code: tcp-check-service("discourse/stack-local-redis", "redis")
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+stack-local-app:
+  defines: runnable
+  inherits: discourse/stack-app
+  metadata:
+    name: Discourse Local Standalone Web
+    description: Local verification flavor for the standalone Discourse stack with a published non-privileged host port.
+    tags: discourse, forum, rails, standalone, local
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: localhost
+      description: Local hostname used by the standalone stack local flavor.
+    discourse-admin-password:
+      type: string
+      env: DISCOURSE_PASSWORD
+      value: <- $global-stack-local-admin-password
+      description: Sensitive generated initial admin password for the local stack flavor.
+    discourse-admin-email:
+      type: string
+      env: DISCOURSE_EMAIL
+      value: admin@example.com
+      description: Initial admin email used during local stack bootstrap.
+    discourse-port:
+      type: int
+      env: DISCOURSE_PORT_NUMBER
+      value: 3000
+      description: Internal HTTP port used by the local stack Discourse web process.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: <- $global-stack-local-db-name
+      description: PostgreSQL database name used by the local stack flavor.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: <- $global-stack-local-db-user
+      description: PostgreSQL username used by the local stack flavor.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: <- $global-stack-local-db-password
+      description: Sensitive generated PostgreSQL password shared with the local stack database.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: <- $global-stack-local-redis-password
+      description: Sensitive generated Redis password shared with the local stack Redis service.
+    host-port:
+      type: int
+      value: 8140
+      description: Non-privileged host port published for local standalone stack verification.
+  containers:
+    discourse:
+      paths:
+        - <- `${volume-path}/discourse-stack-local-app-v2:/bitnami/discourse`
+  services:
+    http:
+      container: discourse
+      port: <- $discourse-port
+      protocol: tcp
+      publish: true
+      host-port: <- $host-port
+      description: Published local Discourse HTTP endpoint for standalone stack verification.
+  connections:
+    database:
+      target: discourse/stack-local-db
+      service: postgres
+      description: Private PostgreSQL service connected to the local stack web process.
+    redis:
+      target: discourse/stack-local-redis
+      service: redis
+      description: Private Redis service connected to the local stack web process.
+  depends:
+    wait-for:
+      runnables:
+        - discourse/stack-local-db
+        - discourse/stack-local-redis
+      timeout: 240
+  checks:
+    readiness:
+      code: http-get-service("discourse/stack-local-app", "http", "/srv/status") get-member("status") 200 equal?
+      period: 20
+      initialDelay: 180
+      attempts: 45
+
+stack-local-sidekiq:
+  defines: runnable
+  inherits: discourse/stack-sidekiq
+  metadata:
+    name: Discourse Local Standalone Sidekiq
+    description: Local verification flavor Sidekiq worker connected to the local standalone stack PostgreSQL and Redis services.
+    tags: discourse, forum, sidekiq, standalone, local
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: localhost
+      description: Local hostname shared with the local stack web process.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: <- $global-stack-local-db-name
+      description: PostgreSQL database name used by the local stack Sidekiq worker.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: <- $global-stack-local-db-user
+      description: PostgreSQL username used by the local stack Sidekiq worker.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: <- $global-stack-local-db-password
+      description: Sensitive generated PostgreSQL password shared with the local stack Sidekiq worker.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: <- $global-stack-local-redis-password
+      description: Sensitive generated Redis password shared with the local stack Sidekiq worker.
+  containers:
+    sidekiq:
+      paths:
+        - <- `${volume-path}/discourse-stack-local-app-v2:/bitnami/discourse`
+  connections:
+    database:
+      target: discourse/stack-local-db
+      service: postgres
+      description: Private PostgreSQL service connected to the local stack Sidekiq worker.
+    redis:
+      target: discourse/stack-local-redis
+      service: redis
+      description: Private Redis service connected to the local stack Sidekiq worker.
+  depends:
+    wait-for:
+      runnables:
+        - discourse/stack-local-app
+      timeout: 600
+
+stack-local:
+  defines: group
+  metadata:
+    name: Discourse Standalone Local Stack
+    description: |
+      Local verification flavor of the standalone Discourse stack. Uses private PostgreSQL and Redis services and publishes Discourse on a non-privileged localhost port because Monk ingress is unavailable locally.
+    tags: discourse, forum, postgres, redis, standalone, local
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    global-stack-local-db-name:
+      type: string
+      value: bitnami_discourse
+      description: PostgreSQL database name shared by local stack runnables.
+    global-stack-local-db-user:
+      type: string
+      value: bn_discourse
+      description: PostgreSQL username shared by local stack runnables.
+    global-stack-local-db-password:
+      type: string
+      value: discourse-local-db-password-20260625
+      description: Sensitive PostgreSQL password for the local stack flavor. Inheriting templates should set secret("discourse-db-password").
+    global-stack-local-redis-password:
+      type: string
+      value: discourse-local-redis-password-20260625
+      description: Sensitive Redis password for the local stack flavor. Inheriting templates should set secret("discourse-redis-password").
+    global-stack-local-admin-password:
+      type: string
+      value: discourse-local-admin-password-20260625
+      description: Sensitive initial Discourse admin password for the local stack flavor. Inheriting templates should set secret("discourse-admin-password").
+  members:
+    - discourse/stack-local-db
+    - discourse/stack-local-redis
+    - discourse/stack-local-app
+    - discourse/stack-local-sidekiq

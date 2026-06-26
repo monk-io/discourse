@@ -1,0 +1,272 @@
+namespace: discourse
+
+base:
+  defines: runnable
+  metadata:
+    name: Discourse Base Web
+    description: |
+      Reusable Discourse web component. Requires an external PostgreSQL service and Redis service supplied through Monk connections. Compatible backing packages include self-hosted postgresql/db plus redis/redis, or managed PostgreSQL such as Neon plus Redis Cloud.
+    tags: discourse, forum, rails, component, web
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    image-tag:
+      type: string
+      value: latest
+      description: Public bitnamilegacy/discourse image tag used by the Discourse component.
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: localhost
+      description: Public hostname Discourse uses when generating links and absolute URLs.
+    discourse-site-name:
+      type: string
+      env: DISCOURSE_SITE_NAME
+      value: Monk Discourse
+      description: Site name used during the first Discourse bootstrap.
+    discourse-port:
+      type: int
+      env: DISCOURSE_PORT_NUMBER
+      value: 3000
+      description: Internal HTTP port used by the Discourse web process.
+    discourse-env:
+      type: string
+      env: DISCOURSE_ENV
+      value: production
+      description: Rails environment used by Discourse.
+    discourse-precompile-assets:
+      type: string
+      env: DISCOURSE_PRECOMPILE_ASSETS
+      value: "yes"
+      description: Whether the container precompiles assets during first initialization.
+    discourse-admin-username:
+      type: string
+      env: DISCOURSE_USERNAME
+      value: admin
+      description: Initial admin username used only during first Discourse bootstrap.
+    discourse-admin-password:
+      type: string
+      env: DISCOURSE_PASSWORD
+      value: ""
+      description: Sensitive initial admin password. Inheriting templates must set a generated value or secret("discourse-admin-password") using a plain secret name.
+    discourse-admin-email:
+      type: string
+      env: DISCOURSE_EMAIL
+      value: admin@example.com
+      description: Initial admin email used only during first Discourse bootstrap.
+    database-host:
+      type: string
+      env: DISCOURSE_DATABASE_HOST
+      value: <- connection-hostname("database")
+      description: PostgreSQL hostname read from the Monk database connection.
+    database-port:
+      type: int
+      env: DISCOURSE_DATABASE_PORT_NUMBER
+      value: 5432
+      description: PostgreSQL port used by Discourse.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: discourse
+      description: PostgreSQL database name used by Discourse.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: discourse
+      description: PostgreSQL username used by Discourse.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: ""
+      description: Sensitive PostgreSQL password. Inheriting templates must set a generated value or secret("discourse-db-password") using a plain secret name.
+    redis-host:
+      type: string
+      env: DISCOURSE_REDIS_HOST
+      value: <- connection-hostname("redis")
+      description: Redis hostname read from the Monk redis connection.
+    redis-port:
+      type: int
+      env: DISCOURSE_REDIS_PORT_NUMBER
+      value: 6379
+      description: Redis port used by Discourse.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: ""
+      description: Sensitive Redis password. Inheriting templates must set a generated value or secret("discourse-redis-password") using a plain secret name.
+    redis-db:
+      type: int
+      env: DISCOURSE_REDIS_DB
+      value: 0
+      description: Redis database number used by Discourse.
+    postgresql-client-database-host:
+      type: string
+      env: POSTGRESQL_CLIENT_DATABASE_HOST
+      value: <- connection-hostname("database")
+      description: PostgreSQL hostname used by the Bitnami initialization client.
+    postgresql-client-postgres-user:
+      type: string
+      env: POSTGRESQL_CLIENT_POSTGRES_USER
+      value: <- $database-user
+      description: PostgreSQL user used by the initialization client to create Discourse extensions.
+    postgresql-client-postgres-password:
+      type: string
+      env: POSTGRESQL_CLIENT_POSTGRES_PASSWORD
+      value: <- $database-password
+      description: Sensitive PostgreSQL initialization client password shared with the Discourse database user.
+    postgresql-client-create-database-name:
+      type: string
+      env: POSTGRESQL_CLIENT_CREATE_DATABASE_NAME
+      value: <- $database-name
+      description: PostgreSQL database name the initialization client ensures exists.
+    postgresql-client-create-database-user:
+      type: string
+      env: POSTGRESQL_CLIENT_CREATE_DATABASE_USERNAME
+      value: <- $database-user
+      description: PostgreSQL database user the initialization client ensures exists.
+    postgresql-client-create-database-password:
+      type: string
+      env: POSTGRESQL_CLIENT_CREATE_DATABASE_PASSWORD
+      value: <- $database-password
+      description: Sensitive PostgreSQL database password supplied to the initialization client.
+    postgresql-client-create-database-extensions:
+      type: string
+      env: POSTGRESQL_CLIENT_CREATE_DATABASE_EXTENSIONS
+      value: hstore,pg_trgm,vector
+      description: PostgreSQL extensions required by the Bitnami Discourse initialization flow.
+    smtp-host:
+      type: string
+      env: DISCOURSE_SMTP_HOST
+      value: ""
+      description: Optional SMTP host for outbound mail; leave empty to configure mail later in Discourse.
+    smtp-port:
+      type: string
+      env: DISCOURSE_SMTP_PORT_NUMBER
+      value: ""
+      description: Optional SMTP port for outbound mail.
+    smtp-user:
+      type: string
+      env: DISCOURSE_SMTP_USER
+      value: ""
+      description: Optional SMTP username for outbound mail.
+    smtp-password:
+      type: string
+      env: DISCOURSE_SMTP_PASSWORD
+      value: ""
+      description: Sensitive optional SMTP password. Inheriting templates should set secret("discourse-smtp-password") when SMTP auth is used.
+  containers:
+    discourse:
+      image: bitnamilegacy/discourse
+      image-tag: <- $image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/discourse/base:/bitnami/discourse`
+  services:
+    http:
+      container: discourse
+      port: <- $discourse-port
+      protocol: tcp
+      publish: false
+      description: Discourse HTTP service consumed by ingress or local published flavors.
+  connections:
+    database:
+      target: ""
+      service: ""
+      description: PostgreSQL service required by Discourse for primary application data.
+    redis:
+      target: ""
+      service: ""
+      description: Redis service required by Discourse for cache, message bus, and background jobs.
+
+sidekiq-base:
+  defines: runnable
+  metadata:
+    name: Discourse Base Sidekiq
+    description: |
+      Reusable Discourse Sidekiq worker component. Requires the same PostgreSQL, Redis, and persistent Discourse volume configuration as the web component.
+    tags: discourse, forum, rails, component, sidekiq
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    image-tag:
+      type: string
+      value: latest
+      description: Public bitnamilegacy/discourse image tag used by the Sidekiq component.
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: localhost
+      description: Public hostname shared with the Discourse web process.
+    discourse-env:
+      type: string
+      env: DISCOURSE_ENV
+      value: production
+      description: Rails environment used by the Sidekiq worker.
+    database-host:
+      type: string
+      env: DISCOURSE_DATABASE_HOST
+      value: <- connection-hostname("database")
+      description: PostgreSQL hostname read from the Monk database connection.
+    database-port:
+      type: int
+      env: DISCOURSE_DATABASE_PORT_NUMBER
+      value: 5432
+      description: PostgreSQL port used by Sidekiq.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: discourse
+      description: PostgreSQL database name used by Sidekiq.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: discourse
+      description: PostgreSQL username used by Sidekiq.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: ""
+      description: Sensitive PostgreSQL password. Inheriting templates must set a generated value or secret("discourse-db-password") using a plain secret name.
+    redis-host:
+      type: string
+      env: DISCOURSE_REDIS_HOST
+      value: <- connection-hostname("redis")
+      description: Redis hostname read from the Monk redis connection.
+    redis-port:
+      type: int
+      env: DISCOURSE_REDIS_PORT_NUMBER
+      value: 6379
+      description: Redis port used by Sidekiq.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: ""
+      description: Sensitive Redis password. Inheriting templates must set a generated value or secret("discourse-redis-password") using a plain secret name.
+    redis-db:
+      type: int
+      env: DISCOURSE_REDIS_DB
+      value: 0
+      description: Redis database number used by Sidekiq.
+  containers:
+    sidekiq:
+      image: bitnamilegacy/discourse
+      image-tag: <- $image-tag
+      restart: unless-stopped
+      command: /opt/bitnami/scripts/discourse-sidekiq/run.sh
+      paths:
+        - <- `${volume-path}/discourse/base:/bitnami/discourse`
+  connections:
+    database:
+      target: ""
+      service: ""
+      description: PostgreSQL service required by Sidekiq for application data.
+    redis:
+      target: ""
+      service: ""
+      description: Redis service required by Sidekiq for queues and message bus.
