@@ -1,0 +1,289 @@
+namespace: discourse
+
+example-db:
+  defines: runnable
+  metadata:
+    name: Discourse Component Example PostgreSQL
+    description: |
+      PostgreSQL database used by the Discourse component example. Uses a public pgvector image so required hstore, pg_trgm, and vector extensions are available.
+    tags: discourse, postgres, pgvector, database, component, example, local
+    website: https://www.postgresql.org/
+    source: https://github.com/pgvector/pgvector
+    publisher: monk.io
+    icon: https://www.postgresql.org/media/img/about/press/elephant.png
+    private: false
+  variables:
+    postgres-image-tag:
+      type: string
+      value: pg17
+      description: Public pgvector/pgvector image tag used by the component example database.
+    db-name:
+      type: string
+      env: POSTGRES_DB
+      value: <- $global-example-db-name
+      description: PostgreSQL database name created for the component example.
+    db-user:
+      type: string
+      env: POSTGRES_USER
+      value: <- $global-example-db-user
+      description: PostgreSQL user created for the component example.
+    db-password:
+      type: string
+      env: POSTGRES_PASSWORD
+      value: <- $global-example-db-password
+      description: Sensitive generated PostgreSQL password for the component example database.
+  containers:
+    postgres:
+      image: pgvector/pgvector
+      image-tag: <- $postgres-image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/discourse-example-postgres-v2:/var/lib/postgresql/data`
+  services:
+    postgres:
+      container: postgres
+      port: 5432
+      protocol: tcp
+      publish: false
+      description: Private PostgreSQL endpoint consumed by the Discourse component example.
+  checks:
+    readiness:
+      code: <- `exec("postgres", "pg_isready", "-U", "${db-user}") contains?("accepting connections")`
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+example-redis:
+  defines: runnable
+  metadata:
+    name: Discourse Component Example Redis
+    description: Password-protected Redis service used by the Discourse component example.
+    tags: discourse, redis, cache, component, example, local
+    website: https://redis.io/
+    source: https://github.com/redis/redis
+    publisher: monk.io
+    icon: https://cdn.icon-icons.com/icons2/2415/PNG/512/redis_original_wordmark_logo_icon_146369.png
+    private: false
+  variables:
+    redis-image-tag:
+      type: string
+      value: latest
+      description: Public bitnamilegacy/redis image tag used by the component example.
+    allow-empty-password:
+      type: string
+      env: ALLOW_EMPTY_PASSWORD
+      value: "no"
+      description: Disables empty Redis passwords for the component example.
+    redis-password:
+      type: string
+      env: REDIS_PASSWORD
+      value: <- $global-example-redis-password
+      description: Sensitive generated Redis password for the component example.
+    redis-disable-commands:
+      type: string
+      env: REDIS_DISABLE_COMMANDS
+      value: FLUSHDB,FLUSHALL,CONFIG
+      description: Redis commands disabled for safer default operation.
+  containers:
+    redis:
+      image: bitnamilegacy/redis
+      image-tag: <- $redis-image-tag
+      restart: unless-stopped
+      paths:
+        - <- `${volume-path}/discourse-example-redis-v2:/bitnami/redis/data`
+  services:
+    redis:
+      container: redis
+      port: 6379
+      protocol: tcp
+      publish: false
+      description: Private Redis endpoint consumed by the Discourse component example.
+  checks:
+    readiness:
+      code: tcp-check-service("discourse/example-redis", "redis")
+      period: 10
+      initialDelay: 10
+      attempts: 30
+
+example-app:
+  defines: runnable
+  inherits: discourse/base
+  metadata:
+    name: Discourse Component Example Web
+    description: |
+      Component demonstration web process that inherits the reusable Discourse base and wires concrete PostgreSQL and Redis services.
+    tags: discourse, forum, rails, component, example, local
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: localhost
+      description: Local hostname used by the component example.
+    discourse-admin-password:
+      type: string
+      env: DISCOURSE_PASSWORD
+      value: <- $global-example-admin-password
+      description: Sensitive generated initial admin password for the component example.
+    discourse-admin-email:
+      type: string
+      env: DISCOURSE_EMAIL
+      value: admin@example.com
+      description: Initial admin email used during component example bootstrap.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: <- $global-example-db-name
+      description: PostgreSQL database name used by the component example.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: <- $global-example-db-user
+      description: PostgreSQL username used by the component example.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: <- $global-example-db-password
+      description: Sensitive generated PostgreSQL password shared with the component example database.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: <- $global-example-redis-password
+      description: Sensitive generated Redis password shared with the component example Redis service.
+    host-port:
+      type: int
+      value: 8139
+      description: Non-privileged host port published for local component example verification.
+  containers:
+    discourse:
+      paths:
+        - <- `${volume-path}/discourse-example-app-v2:/bitnami/discourse`
+  services:
+    http:
+      container: discourse
+      port: <- $discourse-port
+      protocol: tcp
+      publish: true
+      host-port: <- $host-port
+      description: Published local Discourse HTTP endpoint for component example verification.
+  connections:
+    database:
+      target: discourse/example-db
+      service: postgres
+      description: Private PostgreSQL service connected to the Discourse component example.
+    redis:
+      target: discourse/example-redis
+      service: redis
+      description: Private Redis service connected to the Discourse component example.
+  depends:
+    wait-for:
+      runnables:
+        - discourse/example-db
+        - discourse/example-redis
+      timeout: 240
+  checks:
+    readiness:
+      code: http-get-service("discourse/example-app", "http", "/srv/status") get-member("status") 200 equal?
+      period: 20
+      initialDelay: 180
+      attempts: 45
+
+example-sidekiq:
+  defines: runnable
+  inherits: discourse/sidekiq-base
+  metadata:
+    name: Discourse Component Example Sidekiq
+    description: Component demonstration Sidekiq worker connected to the same PostgreSQL and Redis services as the example web process.
+    tags: discourse, forum, sidekiq, component, example, local
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    discourse-host:
+      type: string
+      env: DISCOURSE_HOST
+      value: localhost
+      description: Local hostname shared with the component example web process.
+    database-name:
+      type: string
+      env: DISCOURSE_DATABASE_NAME
+      value: <- $global-example-db-name
+      description: PostgreSQL database name used by the component example Sidekiq worker.
+    database-user:
+      type: string
+      env: DISCOURSE_DATABASE_USER
+      value: <- $global-example-db-user
+      description: PostgreSQL username used by the component example Sidekiq worker.
+    database-password:
+      type: string
+      env: DISCOURSE_DATABASE_PASSWORD
+      value: <- $global-example-db-password
+      description: Sensitive generated PostgreSQL password shared with the component example Sidekiq worker.
+    redis-password:
+      type: string
+      env: DISCOURSE_REDIS_PASSWORD
+      value: <- $global-example-redis-password
+      description: Sensitive generated Redis password shared with the component example Sidekiq worker.
+  containers:
+    sidekiq:
+      paths:
+        - <- `${volume-path}/discourse-example-app-v2:/bitnami/discourse`
+  connections:
+    database:
+      target: discourse/example-db
+      service: postgres
+      description: Private PostgreSQL service connected to the component example Sidekiq worker.
+    redis:
+      target: discourse/example-redis
+      service: redis
+      description: Private Redis service connected to the component example Sidekiq worker.
+  depends:
+    wait-for:
+      runnables:
+        - discourse/example-app
+      timeout: 600
+
+example:
+  defines: group
+  metadata:
+    name: Discourse Component Example
+    description: |
+      Component demonstration that composes the reusable Discourse web and Sidekiq components with concrete PostgreSQL and Redis services, publishing a local HTTP port for verification.
+    tags: discourse, forum, postgres, redis, component, example, local
+    website: https://www.discourse.org/
+    source: https://github.com/discourse/discourse
+    publisher: monk.io
+    icon: https://www.discourse.org/a/img/logo-icon.svg
+    private: false
+  variables:
+    global-example-db-name:
+      type: string
+      value: bitnami_discourse
+      description: PostgreSQL database name shared by component example runnables.
+    global-example-db-user:
+      type: string
+      value: bn_discourse
+      description: PostgreSQL username shared by component example runnables.
+    global-example-db-password:
+      type: string
+      value: discourse-example-db-password-20260625
+      description: Sensitive PostgreSQL password for the component example. Inheriting templates should set secret("discourse-db-password").
+    global-example-redis-password:
+      type: string
+      value: discourse-example-redis-password-20260625
+      description: Sensitive Redis password for the component example. Inheriting templates should set secret("discourse-redis-password").
+    global-example-admin-password:
+      type: string
+      value: discourse-example-admin-password-20260625
+      description: Sensitive initial Discourse admin password for the component example. Inheriting templates should set secret("discourse-admin-password").
+  members:
+    - discourse/example-db
+    - discourse/example-redis
+    - discourse/example-app
+    - discourse/example-sidekiq

@@ -1,0 +1,4 @@
+LOAD discourse.yaml
+LOAD discourse-example.yaml
+LOAD discourse-stack.yaml
+ENTRY discourse/stack-local
